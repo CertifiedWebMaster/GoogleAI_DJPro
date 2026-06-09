@@ -19,6 +19,8 @@ interface MixerProps {
   compact?: boolean;
   limiterEnabled?: boolean;
   onToggleLimiter?: () => void;
+  eqBypass?: boolean;
+  onToggleEqBypass?: () => void;
 }
 
 export default function Mixer({
@@ -33,6 +35,8 @@ export default function Mixer({
   compact = false,
   limiterEnabled = false,
   onToggleLimiter,
+  eqBypass = false,
+  onToggleEqBypass,
 }: MixerProps) {
   
   // Custom dial render helper (creates fully styled Pioneer silver-top knobs)
@@ -183,10 +187,9 @@ export default function Mixer({
               step="0.01"
               value={deckA.volume}
               onChange={(e) => onChangeKnob("A", "volume", parseFloat(e.target.value))}
-              className={`fader-range absolute bg-[#050505] rounded-full appearance-none outline-none cursor-ns-resize shadow-[inset_0_1px_3px_rgba(0,0,0,1)] ${
-                compact ? "w-14" : "w-28"
-              } h-1`}
-              style={{ transform: "rotate(-90deg)" }}
+              className="w-1.5 h-full bg-[#050505] rounded-full appearance-none outline-none cursor-ns-resize shadow-[inset_0_1px_3px_rgba(0,0,0,1)]"
+              style={{ WebkitAppearance: "slider-vertical" } as any}
+              {...{ orient: "vertical" }}
             />
           </div>
           <span className="text-[10px] font-mono text-zinc-500">{(deckA.volume * 100).toFixed(0)}%</span>
@@ -275,10 +278,9 @@ export default function Mixer({
               step="0.01"
               value={deckB.volume}
               onChange={(e) => onChangeKnob("B", "volume", parseFloat(e.target.value))}
-              className={`fader-range absolute bg-[#050505] rounded-full appearance-none outline-none cursor-ns-resize shadow-[inset_0_1px_3px_rgba(0,0,0,1)] ${
-                compact ? "w-14" : "w-28"
-              } h-1`}
-              style={{ transform: "rotate(-90deg)" }}
+              className="w-1.5 h-full bg-[#050505] rounded-full appearance-none outline-none cursor-ns-resize shadow-[inset_0_1px_3px_rgba(0,0,0,1)]"
+              style={{ WebkitAppearance: "slider-vertical" } as any}
+              {...{ orient: "vertical" }}
             />
           </div>
           <span className="text-[10px] font-mono text-zinc-500">{(deckB.volume * 100).toFixed(0)}%</span>
@@ -371,6 +373,38 @@ export default function Mixer({
               <span
                 className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
                   limiterEnabled ? "translate-x-3.5" : "translate-x-0"
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* Master EQ Bypass Switch */}
+        <div className={`flex justify-between items-center border border-white/5 ${
+          compact ? "bg-[#050505]/20 p-1.5 rounded-lg gap-2" : "bg-[#050505]/50 p-2.5 rounded-xl gap-4"
+        }`}>
+          <div className="flex items-center gap-1.5 select-none shrink-0">
+            <SlidersHorizontal className={`h-4 w-4 ${eqBypass ? "text-orange-500 animate-pulse" : "text-zinc-500"}`} />
+            <div className="text-left font-sans">
+              <p className={`font-bold tracking-widest uppercase text-zinc-300 ${compact ? "text-[8px]" : "text-[9px]"}`}>EQ BYPASS</p>
+              {!compact && <p className="text-[7.5px] text-zinc-500 leading-none mt-0.5">ROUTE AROUND HARDWARE EQ</p>}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className={`font-mono font-bold text-[8.5px] uppercase ${eqBypass ? "text-orange-400" : "text-zinc-500"}`}>
+              {eqBypass ? "BYPASSED" : "ACTIVE"}
+            </span>
+            <button
+              id="eq-bypass-toggle-btn"
+              onClick={onToggleEqBypass}
+              className={`relative inline-flex h-4.5 w-8 shrink-0 cursor-pointer rounded-full border border-zinc-700 transition-colors duration-200 ease-in-out focus:outline-none ${
+                eqBypass ? "bg-orange-500" : "bg-zinc-850"
+              }`}
+            >
+              <span
+                className={`pointer-events-none inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out ${
+                  eqBypass ? "translate-x-3.5" : "translate-x-0"
                 }`}
               />
             </button>

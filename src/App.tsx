@@ -22,6 +22,7 @@ export default function App() {
   const [fxDelayTime, setFxDelayTime] = useState(0.5); // Second intervals (1/4 loop)
   const [fxReverb, setFxReverb] = useState(0.05); // Wet reverb fader
   const [limiterEnabled, setLimiterEnabled] = useState(false);
+  const [eqBypass, setEqBypass] = useState(false);
 
   // SoundCloud active embedded widget stream
   const [activeScUrl, setActiveScUrl] = useState<string | null>(null);
@@ -98,6 +99,99 @@ export default function App() {
   const samplerVolumeNodeRef = useRef<GainNode | null>(null); // Dedicated node for sample pads
   const limiterNodeRef = useRef<DynamicsCompressorNode | null>(null);
 
+  // Recording audio stream state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingSeconds, setRecordingSeconds] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const recordDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
+
+  useEffect(() => {
+    let interval: any = null;
+    if (isRecording) {
+      interval = setInterval(() => {
+        setRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } else {
+      setRecordingSeconds(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isRecording]);
+
+  const formatRecordingTime = (sec: number) => {
+    const m = Math.floor(sec / 60).toString().padStart(2, "0");
+    const s = (sec % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
+  const handleToggleRecording = () => {
+    if (isRecording) {
+      // Stop recording
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      setIsRecording(false);
+    } else {
+      // Start recording
+      if (!audioContextRef.current || !recordDestRef.current) {
+        alert("Please start the session first by clicking 'Launch DJ Deck Platform'!");
+        return;
+      }
+      
+      recordedChunksRef.current = [];
+      const stream = recordDestRef.current.stream;
+      
+      // Determine supported mimeTypes to ensure optimal quality
+      let options = { mimeType: "audio/webm;codecs=opus" };
+      if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+        options = { mimeType: "audio/ogg;codecs=opus" };
+        if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+          options = { mimeType: "audio/webm" };
+          if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+            options = { mimeType: "" }; // default fallback
+          }
+        }
+      }
+
+      try {
+        const recorder = new MediaRecorder(stream, options);
+        mediaRecorderRef.current = recorder;
+        
+        recorder.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) {
+            recordedChunksRef.current.push(e.data);
+          }
+        };
+
+        recorder.onstop = () => {
+          const blob = new Blob(recordedChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.style.display = "none";
+          a.href = url;
+          const dateStr = new Date().toISOString().slice(0, 10);
+          const timeStr = new Date().toTimeString().slice(0, 8).replace(/:/g, "-");
+          a.download = `WebDJ-Mix-${dateStr}_${timeStr}.webm`;
+          document.body.appendChild(a);
+          a.click();
+          
+          setTimeout(() => {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 100);
+        };
+
+        recorder.start();
+        setIsRecording(true);
+      } catch (err: any) {
+        console.error("Failed to start MediaRecorder:", err);
+        alert(`Could not start recording: ${err.message || err}`);
+      }
+    }
+  };
+
   // Sync session clock tracking
   const [sessionTimer, setSessionTimer] = useState("00:00");
   useEffect(() => {
@@ -159,6 +253,7 @@ export default function App() {
     filterNodeRefA.current = filterValA;
 
     const gainA = ctx.createGain();
+    gainA.gain.value = deckA.volume;
     gainNodeRefA.current = gainA;
 
     const crossA = ctx.createGain();
@@ -169,10 +264,14 @@ export default function App() {
     analyserRefA.current = anaA;
 
     // Routing Deck A: Source -> Low -> Mid -> High -> Sweep Filter -> Gain -> Crossfader -> Analyser
-    srcA.connect(eqLowA);
-    eqLowA.connect(eqMidA);
-    eqMidA.connect(eqHighA);
-    eqHighA.connect(filterValA);
+    if (eqBypass) {
+      srcA.connect(filterValA);
+    } else {
+      srcA.connect(eqLowA);
+      eqLowA.connect(eqMidA);
+      eqMidA.connect(eqHighA);
+      eqHighA.connect(filterValA);
+    }
     filterValA.connect(gainA);
     gainA.connect(crossA);
     crossA.connect(anaA);
@@ -203,6 +302,7 @@ export default function App() {
     filterNodeRefB.current = filterValB;
 
     const gainB = ctx.createGain();
+    gainB.gain.value = deckB.volume;
     gainNodeRefB.current = gainB;
 
     const crossB = ctx.createGain();
@@ -213,10 +313,14 @@ export default function App() {
     analyserRefB.current = anaB;
 
     // Routing Deck B
-    srcB.connect(eqLowB);
-    eqLowB.connect(eqMidB);
-    eqMidB.connect(eqHighB);
-    eqHighB.connect(filterValB);
+    if (eqBypass) {
+      srcB.connect(filterValB);
+    } else {
+      srcB.connect(eqLowB);
+      eqLowB.connect(eqMidB);
+      eqMidB.connect(eqHighB);
+      eqHighB.connect(filterValB);
+    }
     filterValB.connect(gainB);
     gainB.connect(crossB);
     crossB.connect(anaB);
@@ -298,6 +402,15 @@ export default function App() {
 
     // Connect direct master sum to speakers via limiter
     masterGain.connect(limiter);
+
+    // Setup recording audio destination node
+    try {
+      const recDest = ctx.createMediaStreamDestination();
+      limiter.connect(recDest);
+      recordDestRef.current = recDest;
+    } catch (e) {
+      console.error("Recording stream destination could not be created:", e);
+    }
 
     // Update crossfading parameters
     updateCrossfading(0, crossA, crossB);
@@ -502,6 +615,47 @@ export default function App() {
     }
   };
 
+  // Toggle the Master EQ filter node bypass
+  const handleToggleEqBypass = () => {
+    const newVal = !eqBypass;
+    setEqBypass(newVal);
+
+    // Audio node reconnection sequence
+    if (audioContextRef.current) {
+      // 1. Deck A bypass routing
+      if (sourceNodeRefA.current && filterNodeRefA.current && eqLowNodeRefA.current) {
+        try {
+          sourceNodeRefA.current.disconnect();
+          if (newVal) {
+            // Bypass: Source -> Sweep Filter directly
+            sourceNodeRefA.current.connect(filterNodeRefA.current);
+          } else {
+            // Standard: Source -> Low EQ -> Mid EQ -> High EQ -> Sweep Filter
+            sourceNodeRefA.current.connect(eqLowNodeRefA.current);
+          }
+        } catch (e) {
+          console.error("Error bypassing Deck A EQ dynamically:", e);
+        }
+      }
+
+      // 2. Deck B bypass routing
+      if (sourceNodeRefB.current && filterNodeRefB.current && eqLowNodeRefB.current) {
+        try {
+          sourceNodeRefB.current.disconnect();
+          if (newVal) {
+            // Bypass: Source -> Sweep Filter directly
+            sourceNodeRefB.current.connect(filterNodeRefB.current);
+          } else {
+            // Standard: Source -> Low EQ -> Mid EQ -> High EQ -> Sweep Filter
+            sourceNodeRefB.current.connect(eqLowNodeRefB.current);
+          }
+        } catch (e) {
+          console.error("Error bypassing Deck B EQ dynamically:", e);
+        }
+      }
+    }
+  };
+
   // Perform background spectral pitch-profiling key detection
   const analyzeTrackKey = async (track: Track, deckId: "A" | "B") => {
     const finalUrl = track.isUserUploaded 
@@ -576,8 +730,14 @@ export default function App() {
   const handleUpdateDeckState = (deckId: "A" | "B", updates: Partial<DeckState>) => {
     if (deckId === "A") {
       setDeckA((prev) => ({ ...prev, ...updates }));
+      if (updates.volume !== undefined && gainNodeRefA.current) {
+        gainNodeRefA.current.gain.value = updates.volume;
+      }
     } else {
       setDeckB((prev) => ({ ...prev, ...updates }));
+      if (updates.volume !== undefined && gainNodeRefB.current) {
+        gainNodeRefB.current.gain.value = updates.volume;
+      }
     }
   };
 
@@ -614,7 +774,7 @@ export default function App() {
           <button
             id="launch-deck-btn"
             onClick={handleStartSession}
-            className="w-full bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-bold py-4 rounded-2xl shadow-xl transition-all hover:scale-[1.01] flex items-center justify-center gap-2 text-base cursor-pointer"
+            className="w-full bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white font-bold py-4 rounded-2xl shadow-xl shadow-[0_0_20px_rgba(249,115,22,0.35)] transition-all hover:scale-[1.01] flex items-center justify-center gap-2 text-base cursor-pointer"
           >
             <PlayCircle className="h-5 w-5" />
             INITIALIZE HARDWARE DECK
@@ -684,6 +844,21 @@ export default function App() {
                   <span>Single Board</span>
                 </button>
               </div>
+
+              {/* Record Mix Control Button */}
+              <button
+                id="record-mix-btn"
+                onClick={handleToggleRecording}
+                className={`px-3 py-1.5 md:py-2 rounded-xl transition-all flex items-center gap-2 border font-sans text-xs font-bold leading-none cursor-pointer ${
+                  isRecording
+                    ? "bg-red-500/10 border-red-500/40 text-red-400 font-black animate-pulse"
+                    : "bg-[#050505] border-white/5 text-zinc-400 hover:text-zinc-200 hover:border-white/10"
+                }`}
+                title={isRecording ? "Stop Recording & Download Mix" : "Record Live DJ Mix Output"}
+              >
+                <div className={`w-2.5 h-2.5 rounded-full ${isRecording ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)] animate-pulse" : "bg-zinc-500"}`} />
+                <span>{isRecording ? `REC [${formatRecordingTime(recordingSeconds)}]` : "RECORD MIX"}</span>
+              </button>
 
               <div className="flex items-center gap-2 bg-[#050505] px-3 py-1.5 md:py-2 border border-white/5 rounded-xl">
                 <Activity className="h-4 w-4 text-orange-500 animate-pulse" />
@@ -777,6 +952,8 @@ export default function App() {
                 compact={layoutMode === "compact"}
                 limiterEnabled={limiterEnabled}
                 onToggleLimiter={handleToggleLimiter}
+                eqBypass={eqBypass}
+                onToggleEqBypass={handleToggleEqBypass}
               />
             </div>
 

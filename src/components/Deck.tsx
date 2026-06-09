@@ -54,6 +54,10 @@ export default function Deck({
   const scrollWaveCanvasRef = useRef<HTMLCanvasElement>(null);
   const scrollWaveHistoryRef = useRef<{ amplitude: number; low: number; mid: number; high: number }[]>([]);
 
+  // Waveform history trail references
+  const historyCanvasRef = useRef<HTMLCanvasElement>(null);
+  const historyPointsRef = useRef<{ ratio: number; amplitude: number; timestamp: number }[]>([]);
+
   const handleBeatRepeatToggle = () => {
     const audio = audioRef.current;
     if (!audio || !loadedTrack) return;
@@ -360,6 +364,139 @@ export default function Deck({
     };
   }, [analyserNodeRef.current, deckState.isPlaying, id]);
 
+  // Clear waveform history trail when track is changed or reloaded
+  useEffect(() => {
+    historyPointsRef.current = [];
+  }, [loadedTrack]);
+
+  // Waveform History Trail Canvas rendering loop
+  useEffect(() => {
+    const canvas = historyCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    let animId: number;
+
+    const drawHistoryTrail = () => {
+      animId = requestAnimationFrame(drawHistoryTrail);
+
+      const width = canvas.width;
+      const height = canvas.height;
+      ctx.clearRect(0, 0, width, height);
+
+      const duration = deckState.duration || 1;
+      const currentPlayRatio = deckState.currentTime / duration;
+      const now = Date.now();
+
+      // 1. If playing, grab real-time amplitude and record it at the current ratio
+      if (deckState.isPlaying && loadedTrack) {
+        let currentAmp = 0.05;
+
+        // Try to get actual real-time level
+        if (analyserNodeRef.current) {
+          const dArray = new Uint8Array(analyserNodeRef.current.frequencyBinCount);
+          analyserNodeRef.current.getByteFrequencyData(dArray);
+          let sum = 0;
+          for (let i = 0; i < dArray.length; i++) {
+            sum += dArray[i];
+          }
+          currentAmp = (sum / (dArray.length || 1)) / 255;
+        } else {
+          // fallback simulation if no analyser
+          currentAmp = 0.08 + Math.sin(now / 150) * 0.04;
+        }
+
+        // Add to history
+        historyPointsRef.current.push({
+          ratio: currentPlayRatio,
+          amplitude: Math.max(0.04, currentAmp),
+          timestamp: now
+        });
+      }
+
+      // 2. Filter points that are too old (e.g. older than 15 seconds to make them slowly fade)
+      const maxAgeMs = 15000; // 15 seconds fade window
+      historyPointsRef.current = historyPointsRef.current.filter(p => {
+        return (now - p.timestamp) < maxAgeMs;
+      });
+
+      // 3. Draw the fading history path behind the playhead
+      const points = historyPointsRef.current;
+      if (points.length > 0) {
+        const centerY = height / 2;
+
+        points.forEach(point => {
+          // Draw ONLY behind current play ratio
+          if (point.ratio <= currentPlayRatio + 0.005) {
+            const x = point.ratio * width;
+            const age = now - point.timestamp;
+            const lifeRatio = Math.max(0, 1 - age / maxAgeMs); // 1.0 to 0.0
+            
+            // Symmetrical bar drawing
+            const barHeight = point.amplitude * height * 0.9;
+            
+            ctx.fillStyle = id === "A"
+              ? `rgba(249, 115, 22, ${lifeRatio * 0.55})`
+              : `rgba(59, 130, 246, ${lifeRatio * 0.55})`;
+              
+            ctx.fillRect(x - 1, centerY - barHeight / 2, 2, barHeight);
+          }
+        });
+
+        // Draw elegant glowing silhouette lines connecting the peaks
+        // Top boundary
+        ctx.beginPath();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = id === "A"
+          ? `rgba(251, 146, 60, 0.4)`
+          : `rgba(96, 165, 250, 0.4)`;
+        
+        let firstTop = true;
+        points.forEach(point => {
+          if (point.ratio <= currentPlayRatio + 0.005) {
+            const x = point.ratio * width;
+            const barHeight = point.amplitude * height * 0.9;
+            const y = centerY - barHeight / 2;
+            
+            if (firstTop) {
+              ctx.moveTo(x, y);
+              firstTop = false;
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+        });
+        ctx.stroke();
+
+        // Bottom boundary
+        ctx.beginPath();
+        let firstBottom = true;
+        points.forEach(point => {
+          if (point.ratio <= currentPlayRatio + 0.005) {
+            const x = point.ratio * width;
+            const barHeight = point.amplitude * height * 0.9;
+            const y = centerY + barHeight / 2;
+            
+            if (firstBottom) {
+              ctx.moveTo(x, y);
+              firstBottom = false;
+            } else {
+              ctx.lineTo(x, y);
+            }
+          }
+        });
+        ctx.stroke();
+      }
+    };
+
+    drawHistoryTrail();
+
+    return () => {
+      cancelAnimationFrame(animId);
+    };
+  }, [deckState.isPlaying, deckState.currentTime, loadedTrack, id]);
+
   // Sync state loop with HTML5 audio properties
   useEffect(() => {
     const audio = audioRef.current;
@@ -609,17 +746,7 @@ export default function Deck({
           }
         }
 
-        if (beatPulseDotRef.current) {
-          if (detectedBeat) {
-            beatPulseDotRef.current.style.backgroundColor = id === "A" ? "#f97316" : "#3b82f6";
-            beatPulseDotRef.current.style.transform = "scale(1.25)";
-            beatPulseDotRef.current.style.boxShadow = id === "A" ? "0 0 14px #f97316" : "0 0 14px #3b82f6";
-          } else {
-            beatPulseDotRef.current.style.transform = "scale(1.0)";
-            beatPulseDotRef.current.style.boxShadow = "none";
-            beatPulseDotRef.current.style.backgroundColor = "rgba(255, 255, 255, 0.05)";
-          }
-        }
+        // Beat pulse is now handled cleanly via dynamic CSS animation
 
         if (densityValueTextRef.current) {
           densityValueTextRef.current.innerText = `${liveBeatDensity.toFixed(1)} beats/s`;
@@ -669,11 +796,7 @@ export default function Deck({
           confidenceRef.current.innerText = "0%";
           confidenceRef.current.className = "text-[10px] text-zinc-500 font-medium";
         }
-        if (beatPulseDotRef.current) {
-          beatPulseDotRef.current.style.backgroundColor = "rgba(255, 255, 255, 0.05)";
-          beatPulseDotRef.current.style.transform = "scale(1.0)";
-          beatPulseDotRef.current.style.boxShadow = "none";
-        }
+        // Beat pulse is now handled cleanly via dynamic CSS animation
         if (densityValueTextRef.current) {
           densityValueTextRef.current.innerText = "0.0 beats/s";
         }
@@ -820,17 +943,102 @@ export default function Deck({
   // Calculate dynamic output BPM (affected by current pitch slider modifier)
   const dynamicBpm = (deckState.bpm * deckState.pitch).toFixed(1);
 
+  // Keyboard Shortcuts implementation matching DJ workflow
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // If user is typing in any input/textarea field, bypass DJ hotkeys
+      if (
+        document.activeElement?.tagName === "INPUT" ||
+        document.activeElement?.tagName === "TEXTAREA" ||
+        document.activeElement?.hasAttribute("contenteditable")
+      ) {
+        return;
+      }
+
+      // Determine which deck has focus/interaction
+      const activeDeckContainer = document.activeElement?.closest('[id^="dj-deck-"]');
+      
+      // If a deck has focus, control it. Otherwise, default to DECK A.
+      const isFocused = activeDeckContainer 
+        ? activeDeckContainer.id === `dj-deck-${id}`
+        : id === "A";
+
+      if (!isFocused) return;
+
+      const key = e.key.toLowerCase();
+      
+      if (key === " " || e.code === "Space") {
+        e.preventDefault();
+        togglePlay();
+      } else if (key === "c") {
+        e.preventDefault();
+        triggerCue();
+      } else if (key === "s") {
+        e.preventDefault();
+        onSync();
+      }
+    };
+
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleGlobalKeyDown);
+    };
+  }, [id, loadedTrack, deckState.isPlaying, deckState.currentTime, cuePoint, togglePlay, triggerCue, onSync]);
+
+  // Visual beat-grid overlay ticks generator
+  const beatGridElements = React.useMemo(() => {
+    if (!loadedTrack || !deckState.duration || deckState.duration <= 0 || !deckState.bpm || deckState.bpm <= 0) return null;
+    
+    const songDuration = deckState.duration;
+    const bpm = deckState.bpm;
+    const beatsPerSecond = bpm / 60;
+    const totalBeats = songDuration * beatsPerSecond;
+    
+    const ticks: React.ReactNode[] = [];
+    // Adapt step density based on song length so we don't overcrowd the DOM or layout
+    const step = totalBeats > 400 ? 8 : (totalBeats > 200 ? 4 : 2);
+    
+    for (let beat = 0; beat < totalBeats; beat += step) {
+      const percentage = (beat / totalBeats) * 100;
+      if (percentage >= 100) break;
+      
+      const isBarStart = beat % 4 === 0;
+      
+      ticks.push(
+        <div
+          key={beat}
+          className={`absolute top-0 bottom-0 w-[1px] pointer-events-none transition-all ${
+            isBarStart 
+              ? "bg-zinc-400/50 h-full" 
+              : "bg-zinc-650/20 h-3/5 my-auto"
+          }`}
+          style={{ left: `${percentage}%` }}
+        />
+      );
+    }
+    return ticks;
+  }, [loadedTrack, deckState.duration, deckState.bpm]);
+
   return (
-    <div id={`dj-deck-${id}`} className={`bg-[#111] border ${
-      id === "A" ? "border-orange-500/10 focus-within:border-orange-500/30" : "border-blue-500/10 focus-within:border-blue-500/30"
-    } rounded-2xl flex flex-col justify-between relative shadow-2xl ${
-      compact ? "p-3 xl:p-4 h-full gap-2 min-h-0" : "p-6 gap-6"
-    }`}>
+    <div 
+      id={`dj-deck-${id}`} 
+      tabIndex={0}
+      className={`bg-[#111] border outline-none transition-all duration-300 ${
+        id === "A" 
+          ? "border-orange-500/10 focus-within:border-orange-500/40 focus-within:ring-2 focus-within:ring-orange-500/10" 
+          : "border-blue-500/10 focus-within:border-blue-500/40 focus-within:ring-2 focus-within:ring-blue-500/10"
+      } rounded-2xl flex flex-col justify-between relative shadow-2xl ${
+        compact ? "p-3 xl:p-4 h-full gap-2 min-h-0" : "p-6 gap-6"
+      }`}
+    >
       
       {/* Decorative Deck Label Grid */}
       <div className="absolute top-3 left-4 flex items-center gap-1.5 select-none">
         <span className={`w-2.5 h-2.5 rounded-full ${id === "A" ? "bg-orange-500 shadow-orange-500/80 animate-pulse" : "bg-blue-500 shadow-blue-500/80 animate-pulse"}`} />
         <span className="text-[10px] font-black tracking-widest text-[#555] uppercase">DECK {id}</span>
+        <span className="text-[7px] md:text-[8px] px-1.5 py-0.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-sm font-semibold tracking-wider uppercase leading-none opacity-0 group-focus-within:opacity-100 transition-all">
+          SHORTCUTS ACTIVE
+        </span>
       </div>
 
       <div className="absolute top-3 right-4">
@@ -966,8 +1174,12 @@ export default function Deck({
                 <span className="text-[8px] text-zinc-550 font-bold uppercase font-mono">BEAT PULSE</span>
                 <div
                   ref={beatPulseDotRef}
-                  className="w-3.5 h-3.5 rounded-full border border-white/5 transition-all duration-75"
-                  style={{ backgroundColor: "rgba(255, 255, 255, 0.05)" }}
+                  className="w-3.5 h-3.5 rounded-full border border-white/5"
+                  style={{
+                    backgroundColor: "rgba(255, 255, 255, 0.05)",
+                    animation: (deckState.isPlaying && deckState.bpm) ? `pulse-bpm ${60 / deckState.bpm}s infinite ease-in-out` : "none",
+                    "--pulse-color": id === "A" ? "#f97316" : "#3b82f6"
+                  } as React.CSSProperties}
                 />
               </div>
             </div>
@@ -1068,10 +1280,9 @@ export default function Deck({
               step="0.001"
               value={deckState.pitch}
               onChange={(e) => updateDeckState(id, { pitch: parseFloat(e.target.value) })}
-              className={`fader-range absolute bg-zinc-850 rounded-full appearance-none outline-none cursor-ns-resize shadow-[inset_0_1px_3px_rgba(0,0,0,1)] ${
-                compact ? "w-14" : "w-24"
-              } h-1`}
-              style={{ transform: "rotate(-90deg)" }}
+              className="w-1.5 h-full bg-zinc-850 rounded-full appearance-none outline-none cursor-ns-resize shadow-[inset_0_1px_3px_rgba(0,0,0,1)]"
+              style={{ WebkitAppearance: "slider-vertical" } as any}
+              {...{ orient: "vertical" }}
             />
             {/* Center zero detent mark */}
             <div className="absolute top-1/2 left-0 right-0 h-1 border-t border-zinc-800 pointer-events-none" />
@@ -1128,7 +1339,7 @@ export default function Deck({
             <p className="text-[9px] font-bold text-gray-300 font-mono mt-0.5">{(deckState.volume * 100).toFixed(0)}%</p>
           </div>
 
-          <div className="relative flex-1 flex flex-col items-center justify-center w-full">
+          <div className={`relative flex items-center justify-center w-full min-h-0 ${compact ? "h-12" : "h-20"}`}>
             <input
               id={`deck-volume-fader-${id}`}
               type="range"
@@ -1137,10 +1348,9 @@ export default function Deck({
               step="0.01"
               value={deckState.volume}
               onChange={(e) => updateDeckState(id, { volume: parseFloat(e.target.value) })}
-              className={`vertical-slider w-1 bg-zinc-850 rounded-full appearance-none outline-none cursor-ns-resize ${
-                compact ? "h-12" : "h-20"
-              }`}
-              style={{ WebkitAppearance: "none", writingMode: "bt-lr" } as any}
+              className="w-1.5 h-full bg-zinc-850 rounded-full appearance-none outline-none cursor-ns-resize shadow-[inset_0_1px_3px_rgba(0,0,0,1)]"
+              style={{ WebkitAppearance: "slider-vertical" } as any}
+              {...{ orient: "vertical" }}
             />
           </div>
 
@@ -1197,6 +1407,16 @@ export default function Deck({
             </div>
           )}
 
+          {/* Waveform history trail canvas */}
+          {loadedTrack && (
+            <canvas
+              ref={historyCanvasRef}
+              className="absolute inset-0 pointer-events-none w-full h-full opacity-80"
+              width={400}
+              height={48}
+            />
+          )}
+
           {/* Live cue position head bar indicator */}
           {loadedTrack && (
             <div
@@ -1215,6 +1435,37 @@ export default function Deck({
               title="CUE Point"
             />
           )}
+        </div>
+      </div>
+
+      {/* Real-time Progress Bar */}
+      <div className="flex flex-col gap-1 select-none">
+        <div className="flex justify-between items-center text-[9px] text-zinc-500 font-extrabold tracking-widest font-mono uppercase">
+          <span>Track Playhead Progress</span>
+          <span className={id === "A" ? "text-orange-400" : "text-blue-400"}>
+            {((deckState.currentTime / (deckState.duration || 1)) * 100).toFixed(1)}%
+          </span>
+        </div>
+        <div 
+          onClick={handleWaveformClick}
+          className="relative w-full h-2.5 bg-zinc-950 border border-white/5 rounded-full overflow-hidden cursor-pointer group flex items-center"
+          title="Click to seek position"
+        >
+          {/* Active progress fill */}
+          <div 
+            className={`h-full rounded-full transition-all duration-75 relative z-0 ${
+              id === "A" 
+                ? "bg-gradient-to-r from-orange-600 to-orange-400 shadow-[0_0_8px_rgba(249,115,22,0.5)]" 
+                : "bg-gradient-to-r from-blue-600 to-blue-400 shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+            }`}
+            style={{ width: `${Math.min(100, (deckState.currentTime / (deckState.duration || 1)) * 100)}%` }}
+          />
+          {/* Visual beat-grid overlay ticks */}
+          <div className="absolute inset-0 pointer-events-none flex items-center z-10">
+            {beatGridElements}
+          </div>
+          {/* Hover highlight overlay */}
+          <div className="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-20" />
         </div>
       </div>
 
@@ -1281,7 +1532,7 @@ export default function Deck({
           id={`play-btn-${id}`}
           onClick={togglePlay}
           disabled={!loadedTrack}
-          className={`rounded-xl flex items-center justify-center font-bold text-sm shadow transition-all cursor-pointer ${
+          className={`relative rounded-xl flex items-center justify-center font-bold text-sm shadow transition-all cursor-pointer group/btn ${
             compact ? "h-8" : "h-11"
           } ${
             !loadedTrack
@@ -1294,6 +1545,13 @@ export default function Deck({
           }`}
         >
           {deckState.isPlaying ? <Pause className="h-4 w-4 fill-current" /> : <Play className="h-4 w-4 fill-current" />}
+          
+          {/* Subtle Keyboard Shortcut badge */}
+          {loadedTrack && (
+            <span className="absolute bottom-1 right-1 text-[7px] md:text-[8px] font-mono px-1 py-0 bg-black/50 text-zinc-400 rounded leading-none opacity-0 group-focus-within:opacity-100 transition-opacity border border-white/5 uppercase select-none pointer-events-none">
+              Space
+            </span>
+          )}
         </button>
 
         {/* CDJ CUE Button - Sets checkpoint/jumps back on hold */}
@@ -1301,7 +1559,7 @@ export default function Deck({
           id={`cue-btn-${id}`}
           onClick={triggerCue}
           disabled={!loadedTrack}
-          className={`rounded-xl flex items-center justify-center font-black text-xs font-mono tracking-widest border transition-all cursor-pointer ${
+          className={`relative rounded-xl flex items-center justify-center font-black text-xs font-mono tracking-widest border transition-all cursor-pointer ${
             compact ? "h-8" : "h-11"
           } ${
             !loadedTrack
@@ -1310,7 +1568,14 @@ export default function Deck({
           }`}
           title="Set or play from cue point (HOLD to cue)"
         >
-          CUE
+          <span>CUE</span>
+          
+          {/* Subtle Keyboard Shortcut badge */}
+          {loadedTrack && (
+            <span className="absolute bottom-1 right-1 text-[7px] md:text-[8px] font-mono px-1 py-0 bg-black/50 text-zinc-400 rounded leading-none opacity-0 group-focus-within:opacity-100 transition-opacity border border-white/5 uppercase select-none pointer-events-none">
+              C
+            </span>
+          )}
         </button>
 
         {/* Sync Button */}
@@ -1318,7 +1583,7 @@ export default function Deck({
           id={`sync-btn-${id}`}
           onClick={onSync}
           disabled={!loadedTrack}
-          className={`rounded-xl flex items-center justify-center text-xs font-black tracking-wider uppercase border gap-1 transition-all cursor-pointer ${
+          className={`relative rounded-xl flex items-center justify-center text-xs font-black tracking-wider uppercase border gap-1 transition-all cursor-pointer ${
             compact ? "h-8" : "h-11"
           } ${
             !loadedTrack
@@ -1328,7 +1593,14 @@ export default function Deck({
           title="Sync BPM with opposite deck"
         >
           <Sparkles className="h-3 w-3" />
-          SYNC
+          <span>SYNC</span>
+          
+          {/* Subtle Keyboard Shortcut badge */}
+          {loadedTrack && (
+            <span className="absolute bottom-1 right-1 text-[7px] md:text-[8px] font-mono px-1 py-0 bg-black/50 text-zinc-400 rounded leading-none opacity-0 group-focus-within:opacity-100 transition-opacity border border-white/5 uppercase select-none pointer-events-none">
+              S
+            </span>
+          )}
         </button>
       </div>
 
