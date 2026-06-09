@@ -11,9 +11,10 @@ import { Disc, Zap } from "lucide-react";
 interface SampleGridProps {
   audioContextRef: React.MutableRefObject<AudioContext | null>;
   samplerNodeRef: React.MutableRefObject<GainNode | null>;
+  compact?: boolean;
 }
 
-export default function SampleGrid({ audioContextRef, samplerNodeRef }: SampleGridProps) {
+export default function SampleGrid({ audioContextRef, samplerNodeRef, compact = false }: SampleGridProps) {
   const [activePad, setActivePad] = useState<string | null>(null);
 
   // Trigger sound logic
@@ -61,26 +62,32 @@ export default function SampleGrid({ audioContextRef, samplerNodeRef }: SampleGr
   }, []);
 
   return (
-    <div id="dj-sampler-grid" className="bg-[#0a0a0a] border border-white/10 rounded-2xl p-6 flex flex-col h-[270px]">
+    <div id="dj-sampler-grid" className={`bg-[#0a0a0a] border border-white/10 rounded-2xl flex flex-col ${
+      compact ? "p-3 h-[210px]" : "p-6 h-[270px]"
+    }`}>
       
       {/* Header */}
-      <div className="flex justify-between items-center mb-4 pb-3 border-b border-white/5">
+      <div className={`flex justify-between items-center border-b border-white/5 ${
+        compact ? "mb-1.5 pb-1.5" : "mb-4 pb-3"
+      }`}>
         <div>
-          <h2 className="text-xl font-semibold text-gray-200 flex items-center gap-2">
-            <Disc className="text-orange-500 h-5 w-5 animate-spin-[duration:10s]" />
+          <h2 className={`${compact ? "text-sm" : "text-xl"} font-semibold text-gray-200 flex items-center gap-1.5`}>
+            <Disc className="text-orange-500 h-4.5 w-4.5 animate-spin-[duration:10s]" />
             Sampler Grid
           </h2>
-          <span className="text-xs text-zinc-400">Trigger realtime synthesizers with keyboard letters below</span>
+          {!compact && (
+            <span className="text-xs text-zinc-400">Trigger realtime synthesizers with keyboard letters below</span>
+          )}
         </div>
         <div className="flex gap-1">
-          <span className="px-2 py-0.5 text-[10px] bg-[#050505] font-mono text-orange-500 rounded-md border border-white/5">
+          <span className="px-1.5 py-0.5 text-[9px] bg-[#050505] font-mono text-orange-500 rounded-md border border-white/5">
             ZERO LATENCY
           </span>
         </div>
       </div>
 
       {/* Grid of 8 Pad Buttons */}
-      <div className="grid grid-cols-4 gap-3 flex-1 pb-2">
+      <div className={`grid grid-cols-4 flex-1 pb-1 ${compact ? "gap-1.5" : "gap-3"}`}>
         {SAMPLE_SOUNDS.map((sample) => {
           const isActive = activePad === sample.id;
           return (

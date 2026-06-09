@@ -10,15 +10,18 @@ import Mixer from "./components/Mixer";
 import SongLibrary from "./components/SongLibrary";
 import SampleGrid from "./components/SampleGrid";
 import { PRELOADED_TRACKS } from "./data";
-import { PlayCircle, Award, VolumeX, ShieldAlert, Cloud, HelpCircle, Activity, Disc, Sparkles } from "lucide-react";
+import { PlayCircle, Award, VolumeX, ShieldAlert, Cloud, HelpCircle, Activity, Disc, Sparkles, Minimize2, Maximize2, SlidersHorizontal } from "lucide-react";
+import { detectKeyFromAudioBuffer, getDeterministicFallbackKey } from "./utils/keyDetector";
 
 export default function App() {
   const [sessionActive, setSessionActive] = useState(false);
+  const [layoutMode, setLayoutMode] = useState<"standard" | "compact">("standard");
   const [crossfader, setCrossfader] = useState(0); // -1 (left A) to +1 (right B)
   const [masterVolume, setMasterVolume] = useState(0.8);
   const [fxDelay, setFxDelay] = useState(0.0); // Wet delay fader
   const [fxDelayTime, setFxDelayTime] = useState(0.5); // Second intervals (1/4 loop)
   const [fxReverb, setFxReverb] = useState(0.05); // Wet reverb fader
+  const [limiterEnabled, setLimiterEnabled] = useState(false);
 
   // SoundCloud active embedded widget stream
   const [activeScUrl, setActiveScUrl] = useState<string | null>(null);
@@ -93,6 +96,7 @@ export default function App() {
   
   const masterVolumeNodeRef = useRef<GainNode | null>(null);
   const samplerVolumeNodeRef = useRef<GainNode | null>(null); // Dedicated node for sample pads
+  const limiterNodeRef = useRef<DynamicsCompressorNode | null>(null);
 
   // Sync session clock tracking
   const [sessionTimer, setSessionTimer] = useState("00:00");
@@ -245,12 +249,27 @@ export default function App() {
     delayWet.gain.value = fxDelay; // controlled by slider
     delayWetNodeRef.current = delayWet;
 
+    // Create Hard Limiter Compressor Node
+    const limiter = ctx.createDynamicsCompressor();
+    limiterNodeRef.current = limiter;
+    if (limiterEnabled) {
+      limiter.threshold.setValueAtTime(-1.0, ctx.currentTime);
+      limiter.knee.setValueAtTime(0.0, ctx.currentTime);
+      limiter.ratio.setValueAtTime(20.0, ctx.currentTime);
+      limiter.attack.setValueAtTime(0.003, ctx.currentTime);
+      limiter.release.setValueAtTime(0.05, ctx.currentTime);
+    } else {
+      limiter.threshold.setValueAtTime(0.0, ctx.currentTime);
+      limiter.ratio.setValueAtTime(1.0, ctx.currentTime);
+    }
+    limiter.connect(ctx.destination);
+
     // Connect Echo feedback loop
     masterGain.connect(delay);
     delay.connect(delayFB);
     delayFB.connect(delay); // Loop back
     delay.connect(delayWet);
-    delayWet.connect(ctx.destination); // Send parallel echo to standard output
+    delayWet.connect(limiter); // Send parallel echo to limiter
 
     // Create a physical Synthesizable Multi-Tap Reverb block
     const revWet = ctx.createGain();
@@ -275,10 +294,10 @@ export default function App() {
     verbFB.connect(verbDelay1); // simple comb loop
     
     verbDelay3.connect(revWet);
-    revWet.connect(ctx.destination);
+    revWet.connect(limiter);
 
-    // Connect direct master sum to speakers
-    masterGain.connect(ctx.destination);
+    // Connect direct master sum to speakers via limiter
+    masterGain.connect(limiter);
 
     // Update crossfading parameters
     updateCrossfading(0, crossA, crossB);
@@ -436,6 +455,8 @@ export default function App() {
     audio.src = finalUrl;
     audio.load();
 
+    const fallbackKey = getDeterministicFallbackKey(track.id, track.title);
+
     const updateState = {
       loadedTrack: track,
       bpm: track.bpm,
@@ -444,12 +465,94 @@ export default function App() {
       currentTime: 0,
       loopLength: null,
       isLooping: false,
+      detectedKey: fallbackKey,
+      isKeyAnalyzing: true,
     };
 
     if (deckId === "A") {
       setDeckA((prev) => ({ ...prev, ...updateState }));
     } else {
       setDeckB((prev) => ({ ...prev, ...updateState }));
+    }
+
+    // Trigger background key extraction
+    analyzeTrackKey(track, deckId);
+  };
+
+  // Toggle the master hard limiter
+  const handleToggleLimiter = () => {
+    const newVal = !limiterEnabled;
+    setLimiterEnabled(newVal);
+
+    if (limiterNodeRef.current && audioContextRef.current) {
+      const now = audioContextRef.current.currentTime;
+      const limiter = limiterNodeRef.current;
+      if (newVal) {
+        // Safe hard limiter configuration to shield audio and limit clipping peaks at -1.0dB
+        limiter.threshold.setValueAtTime(-1.0, now);
+        limiter.knee.setValueAtTime(0.0, now);
+        limiter.ratio.setValueAtTime(20.0, now);
+        limiter.attack.setValueAtTime(0.003, now);
+        limiter.release.setValueAtTime(0.05, now);
+      } else {
+        // Default transparent bypass configurations (1:1 curve at 0dB)
+        limiter.threshold.setValueAtTime(0.0, now);
+        limiter.ratio.setValueAtTime(1.0, now);
+      }
+    }
+  };
+
+  // Perform background spectral pitch-profiling key detection
+  const analyzeTrackKey = async (track: Track, deckId: "A" | "B") => {
+    const finalUrl = track.isUserUploaded 
+      ? track.url 
+      : `/api/proxy?url=${encodeURIComponent(track.url)}`;
+
+    try {
+      const response = await fetch(finalUrl);
+      if (!response.ok) throw new Error("CORS Proxy error");
+      const arrayBuffer = await response.arrayBuffer();
+
+      const ctx = audioContextRef.current;
+      if (!ctx) return;
+
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+
+      let decodedBuffer: AudioBuffer;
+      try {
+        decodedBuffer = await ctx.decodeAudioData(arrayBuffer);
+      } catch (e) {
+        decodedBuffer = await new Promise<AudioBuffer>((resolve, reject) => {
+          ctx.decodeAudioData(arrayBuffer, resolve, reject);
+        });
+      }
+
+      const keyVal = detectKeyFromAudioBuffer(decodedBuffer);
+
+      if (deckId === "A") {
+        setDeckA((prev) => {
+          if (prev.loadedTrack?.id === track.id) {
+            return { ...prev, detectedKey: keyVal, isKeyAnalyzing: false };
+          }
+          return prev;
+        });
+      } else {
+        setDeckB((prev) => {
+          if (prev.loadedTrack?.id === track.id) {
+            return { ...prev, detectedKey: keyVal, isKeyAnalyzing: false };
+          }
+          return prev;
+        });
+      }
+    } catch (err) {
+      console.warn("Key analysis failed (using fallback key):", err);
+      if (deckId === "A") {
+        setDeckA((prev) => prev.loadedTrack?.id === track.id ? { ...prev, isKeyAnalyzing: false } : prev);
+      } else {
+        setDeckB((prev) => prev.loadedTrack?.id === track.id ? { ...prev, isKeyAnalyzing: false } : prev);
+      }
     }
   };
 
@@ -479,7 +582,11 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#050505] text-gray-300 font-sans p-4 md:p-8 selection:bg-orange-500/30 selection:text-orange-400">
+    <div className={`bg-[#050505] text-gray-300 font-sans selection:bg-orange-500/30 selection:text-orange-400 transition-all duration-300 ${
+      sessionActive && layoutMode === "compact"
+        ? "xl:h-screen xl:overflow-hidden flex flex-col p-2 xl:p-4"
+        : "min-h-screen p-4 md:p-8"
+    }`}>
       
       {/* Hidden Audio element blocks, capturing raw streams */}
       <audio ref={audioRefA} className="hidden" />
@@ -522,16 +629,20 @@ export default function App() {
         </div>
       ) : (
         /* Real Virtual DJ Station Deck Layout */
-        <div className="max-w-7xl mx-auto space-y-6">
+        <div className={`max-w-7xl mx-auto transition-all duration-300 ${
+          layoutMode === "compact" ? "xl:flex-1 xl:min-h-0 xl:flex xl:flex-col xl:justify-between space-y-3" : "space-y-6"
+        }`}>
           
           {/* SYSTEM HEADER BAR */}
-          <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#0a0a0a] border border-white/10 rounded-2xl px-6 py-4 shadow-xl">
+          <header className={`flex flex-col md:flex-row md:items-center justify-between gap-4 bg-[#0a0a0a] border border-white/10 rounded-2xl shadow-xl transition-all duration-300 ${
+            layoutMode === "compact" ? "px-4 py-2" : "px-6 py-4"
+          }`}>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-[#050505] border border-orange-500/25 flex items-center justify-center">
                 <Disc className="h-5 w-5 text-orange-500 animate-spin" />
               </div>
               <div>
-                <h1 className="text-base font-black tracking-widest text-white uppercase flex items-center gap-1.5">
+                <h1 className="text-base font-black tracking-widest text-white uppercase flex items-center gap-1.5 leading-none">
                   ONYX<span className="text-orange-500">MIX</span>
                   <span className="px-1.5 py-0.5 text-[8px] bg-orange-500/10 text-orange-500 font-bold tracking-widest rounded border border-orange-500/20 uppercase">
                     LIVE CONNECTION
@@ -541,22 +652,53 @@ export default function App() {
               </div>
             </div>
 
-            {/* Hardware VU Level Meters & Timer */}
-            <div className="flex items-center gap-6">
-              <div className="flex items-center gap-2 bg-[#050505] px-4 py-2 border border-white/5 rounded-xl">
+            {/* Hardware VU Level Meters, Timer & layout Mode Switchers */}
+            <div className="flex items-center gap-4 flex-wrap md:flex-nowrap">
+              
+              {/* Layout Mode Toggles */}
+              <div className="flex bg-[#050505] p-1 border border-white/5 rounded-xl font-sans text-xs font-bold leading-none select-none">
+                <button
+                  id="layout-standard-btn"
+                  onClick={() => setLayoutMode("standard")}
+                  className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                    layoutMode === "standard"
+                      ? "bg-zinc-800 text-white font-extrabold"
+                      : "text-zinc-500 hover:text-zinc-400"
+                  }`}
+                  title="Default View (Large Components & Main Page Scroll)"
+                >
+                  <Maximize2 className="h-3 w-3 text-zinc-400" />
+                  <span>Scroll View</span>
+                </button>
+                <button
+                  id="layout-compact-btn"
+                  onClick={() => setLayoutMode("compact")}
+                  className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                    layoutMode === "compact"
+                      ? "bg-gradient-to-r from-orange-500 to-amber-500 text-slate-950 font-black"
+                      : "text-zinc-500 hover:text-zinc-400"
+                  }`}
+                  title="Consolidated Full-Screen View (No Scrolling)"
+                >
+                  <Minimize2 className="h-3 w-3" />
+                  <span>Single Board</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 bg-[#050505] px-3 py-1.5 md:py-2 border border-white/5 rounded-xl">
                 <Activity className="h-4 w-4 text-orange-500 animate-pulse" />
                 <div className="text-left font-mono">
-                  <p className="text-[9px] text-zinc-500 leading-none">ELAPSED TIME</p>
-                  <p className="text-sm font-black text-zinc-200 mt-0.5">{sessionTimer}</p>
+                  <p className="text-[8px] text-zinc-500 leading-none">TIME</p>
+                  <p className="text-xs md:text-sm font-black text-zinc-200 mt-0.5">{sessionTimer}</p>
                 </div>
               </div>
 
               {/* Master Output Status Indicator */}
-              <div className="flex items-center gap-2 bg-[#050505] px-4 py-2 border border-white/5 rounded-xl">
+              <div className="flex items-center gap-2 bg-[#050505] px-3 py-1.5 md:py-2 border border-white/5 rounded-xl">
                 <Sparkles className="h-4 w-4 text-blue-400" />
                 <div className="text-left font-mono">
-                  <p className="text-[9px] text-zinc-500 leading-none">SYS LEVEL</p>
-                  <p className="text-sm font-black text-zinc-200 mt-0.5">{(masterVolume * 100).toFixed(0)}%</p>
+                  <p className="text-[8px] text-zinc-500 leading-none">SYS LEVEL</p>
+                  <p className="text-xs md:text-sm font-black text-zinc-200 mt-0.5">{(masterVolume * 100).toFixed(0)}%</p>
                 </div>
               </div>
             </div>
@@ -600,10 +742,14 @@ export default function App() {
           )}
 
           {/* ACTIVE DJ DECKS ROW & HARDWARE MIXER PORT GRID */}
-          <main className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <main className={`grid grid-cols-1 lg:grid-cols-12 transition-all duration-300 ${
+            layoutMode === "compact"
+              ? "xl:flex-[5] xl:min-h-0 gap-3 items-stretch"
+              : "gap-6 items-start"
+          }`}>
             
             {/* DECK A TURNTABLE - Column span 4 */}
-            <div className="lg:col-span-4 h-full">
+            <div className="lg:col-span-4 h-full min-h-0 flex flex-col">
               <Deck
                 id="A"
                 loadedTrack={deckA.loadedTrack}
@@ -613,11 +759,12 @@ export default function App() {
                 otherDeckState={deckB}
                 onSync={() => handleSyncDecks("A")}
                 analyserNodeRef={analyserRefA}
+                compact={layoutMode === "compact"}
               />
             </div>
 
             {/* HARDWARE MIXER - Column span 4 */}
-            <div className="lg:col-span-4 h-full">
+            <div className="lg:col-span-4 h-full min-h-0 flex flex-col">
               <Mixer
                 deckA={deckA}
                 deckB={deckB}
@@ -627,11 +774,14 @@ export default function App() {
                 fxDelayTime={fxDelayTime}
                 fxReverb={fxReverb}
                 onChangeKnob={handleKnobChange}
+                compact={layoutMode === "compact"}
+                limiterEnabled={limiterEnabled}
+                onToggleLimiter={handleToggleLimiter}
               />
             </div>
 
             {/* DECK B TURNTABLE - Column span 4 */}
-            <div className="lg:col-span-4 h-full">
+            <div className="lg:col-span-4 h-full min-h-0 flex flex-col">
               <Deck
                 id="B"
                 loadedTrack={deckB.loadedTrack}
@@ -641,40 +791,49 @@ export default function App() {
                 otherDeckState={deckA}
                 onSync={() => handleSyncDecks("B")}
                 analyserNodeRef={analyserRefB}
+                compact={layoutMode === "compact"}
               />
             </div>
 
           </main>
 
           {/* BOTTOM MUSIC SELECTION LIBRARY & SEQUENCER SAMPLE PADS */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className={`grid grid-cols-1 lg:grid-cols-12 transition-all duration-300 ${
+            layoutMode === "compact"
+              ? "xl:flex-[4] xl:min-h-0 gap-3 items-stretch"
+              : "gap-6 items-start"
+          }`}>
             
             {/* Library list loader - Column span 7 */}
-            <div className="lg:col-span-7 h-full">
+            <div className="lg:col-span-7 h-full min-h-0 flex flex-col">
               <SongLibrary
                 onLoadTrack={handleLoadTrack}
                 deckTrackA={deckA.loadedTrack}
                 deckTrackB={deckB.loadedTrack}
+                compact={layoutMode === "compact"}
               />
             </div>
 
             {/* Tap Sample Synthesizers - Column span 5 */}
-            <div className="lg:col-span-5 h-full">
+            <div className="lg:col-span-5 h-full min-h-0 flex flex-col">
               <SampleGrid
                 audioContextRef={audioContextRef}
                 samplerNodeRef={samplerVolumeNodeRef}
+                compact={layoutMode === "compact"}
               />
 
               {/* Offline Safe Alert and User Instructions */}
-              <div className="mt-4 bg-[#0a0a0a] border border-white/5 rounded-2xl p-4 flex gap-3 text-xs text-zinc-450 shadow-md">
-                <Award className="h-5 w-5 text-orange-500 shrink-0" />
-                <div className="space-y-1">
-                  <p className="font-bold text-zinc-200">Pro-DJ Mixing Controls Tip:</p>
-                  <p>
-                    Dragging the turntable platters on Deck A & B lets you scratch the track in real time. Hover and drag sliders on the Mixer console to sweep lowpass/highpass filters and sculpt your transition.
-                  </p>
+              {! (layoutMode === "compact") && (
+                <div className="mt-4 bg-[#0a0a0a] border border-white/5 rounded-2xl p-4 flex gap-3 text-xs text-zinc-450 shadow-md">
+                  <Award className="h-5 w-5 text-orange-500 shrink-0" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-zinc-200">Pro-DJ Mixing Controls Tip:</p>
+                    <p>
+                      Dragging the turntable platters on Deck A & B lets you scratch the track in real time. Hover and drag sliders on the Mixer console to sweep lowpass/highpass filters and sculpt your transition.
+                    </p>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
           </div>

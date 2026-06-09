@@ -12,9 +12,10 @@ interface SongLibraryProps {
   onLoadTrack: (track: Track, deckId: "A" | "B") => void;
   deckTrackA: Track | null;
   deckTrackB: Track | null;
+  compact?: boolean;
 }
 
-export default function SongLibrary({ onLoadTrack, deckTrackA, deckTrackB }: SongLibraryProps) {
+export default function SongLibrary({ onLoadTrack, deckTrackA, deckTrackB, compact = false }: SongLibraryProps) {
   const [tracks, setTracks] = useState<Track[]>(PRELOADED_TRACKS);
   const [searchQuery, setSearchQuery] = useState("");
   const [scUrl, setScUrl] = useState("");
@@ -103,34 +104,43 @@ export default function SongLibrary({ onLoadTrack, deckTrackA, deckTrackB }: Son
   };
 
   return (
-    <div id="dj-track-library" className="bg-[#0a0a0a] border border-white/10 rounded-2xl p-6 flex flex-col h-[520px]">
+    <div id="dj-track-library" className={`bg-[#0a0a0a] border border-white/10 rounded-2xl flex flex-col ${
+      compact ? "p-3 h-[290px]" : "p-6 h-[520px]"
+    }`}>
       
       {/* Title & Import Filer */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-white/5 pb-4 mb-4">
+      <div className={`flex flex-col md:flex-row md:items-center justify-between border-b border-white/5 pb-3 ${
+        compact ? "mb-2 pb-2" : "mb-4 gap-4 pb-4"
+      }`}>
         <div>
-          <h2 className="text-xl font-semibold text-gray-200 flex items-center gap-2">
-            <Music className="text-orange-500 h-5 w-5" />
+          <h2 className={`${compact ? "text-sm" : "text-xl"} font-semibold text-gray-200 flex items-center gap-1.5`}>
+            <Music className="text-orange-500 h-4.5 w-4.5" />
             Track Library
           </h2>
-          <span className="text-xs text-zinc-400">Preloaded mixes, offline local files, and SoundCloud tracks</span>
+          {!compact && (
+            <span className="text-xs text-zinc-400">Preloaded mixes, offline local files, and SoundCloud tracks</span>
+          )}
         </div>
 
         {/* Quick Search */}
-        <div className="relative w-full md:w-64">
+        <div className={`relative w-full ${compact ? "md:w-48 mt-1.5 md:mt-0" : "md:w-64"}`}>
           <input
             id="library-search-input"
             type="text"
-            placeholder="Search tracks or genres..."
+            placeholder="Search tracks..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-[#050505] text-gray-200 pl-9 pr-4 py-2 rounded-xl text-sm border border-white/5 focus:border-white/20 focus:outline-none"
+            className={`w-full bg-[#050505] text-gray-200 rounded-xl border border-white/5 focus:border-white/20 focus:outline-none ${
+              compact ? "pl-7 pr-3 py-1 text-xs" : "pl-9 pr-4 py-2 text-sm"
+            }`}
           />
-          <Search className="absolute left-3 top-2.5 text-zinc-500 h-4 w-4" />
+          <Search className={`absolute text-zinc-500 ${compact ? "left-2 top-2 h-3.5 w-3.5" : "left-3 top-2.5 h-4 w-4"}`} />
         </div>
       </div>
 
       {/* Upload and SoundCloud Connection Rows */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+      {!compact && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
         {/* Drag and Drop / Manual Upload */}
         <div 
           onClick={() => fileInputRef.current?.click()}
@@ -185,6 +195,7 @@ export default function SongLibrary({ onLoadTrack, deckTrackA, deckTrackB }: Son
           </form>
         </div>
       </div>
+      )}
 
       {/* Playlist Grid Scroll */}
       <div className="flex-1 overflow-y-auto pr-1 space-y-2 custom-scrollbar">

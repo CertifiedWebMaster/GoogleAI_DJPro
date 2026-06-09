@@ -38,4 +38,6 @@ export interface DeckState {
   eqHigh: number; // dB boost/cut (-12 to 12)
   filterVal: number; // -100 to 100 (Negative = lowpass, Positive = highpass, 0 = neutral)
   loadedTrack: Track | null;
+  detectedKey?: string;
+  isKeyAnalyzing?: boolean;
 }

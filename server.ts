@@ -54,29 +54,8 @@ async function startServer() {
 
       res.status(response.status);
 
-      if (response.body) {
-        const reader = response.body.getReader();
-        const stream = new ReadableStream({
-          async start(controller) {
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                controller.enqueue(value);
-              }
-              controller.close();
-            } catch (err) {
-              controller.error(err);
-            }
-          }
-        });
-
-        // Convert ReadableStream to Node.JS compatible format
-        const buffer = await response.arrayBuffer();
-        res.send(Buffer.from(buffer));
-      } else {
-        res.end();
-      }
+      const buffer = await response.arrayBuffer();
+      res.send(Buffer.from(buffer));
     } catch (error: any) {
       console.error("Audio proxy error for url:", audioUrl, error.message);
       res.status(500).send("Proxy streaming failed: " + error.message);
