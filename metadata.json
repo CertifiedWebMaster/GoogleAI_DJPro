@@ -1,0 +1,6 @@
+{
+  "name": "Web DJ Mixer",
+  "description": "An interactive full-stack online DJ platform with visual turntables, multi-deck mixing faders, filters, EQ, loop tools, sample pads, and customizable audio tracks.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
