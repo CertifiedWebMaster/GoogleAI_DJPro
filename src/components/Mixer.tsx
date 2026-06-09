@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from "react";
+import React, { useRef, useEffect } from "react";
+import * as d3 from "d3";
 import { DeckState } from "../types";
 import { SlidersHorizontal, Sliders, Volume2, Waves, ShieldCheck } from "lucide-react";
 
@@ -21,6 +22,11 @@ interface MixerProps {
   onToggleLimiter?: () => void;
   eqBypass?: boolean;
   onToggleEqBypass?: () => void;
+  analyserRefA?: React.MutableRefObject<AnalyserNode | null>;
+  analyserRefB?: React.MutableRefObject<AnalyserNode | null>;
+  masterAnalyserRef?: React.MutableRefObject<AnalyserNode | null>;
+  crossfaderCurve?: "power" | "linear" | "cut";
+  onToggleCrossfaderCurve?: () => void;
 }
 
 export default function Mixer({
@@ -37,8 +43,130 @@ export default function Mixer({
   onToggleLimiter,
   eqBypass = false,
   onToggleEqBypass,
+  analyserRefA,
+  analyserRefB,
+  masterAnalyserRef,
+  crossfaderCurve = "power",
+  onToggleCrossfaderCurve,
 }: MixerProps) {
   
+  const clipLightRefA = useRef<HTMLDivElement>(null);
+  const clipLightRefB = useRef<HTMLDivElement>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  useEffect(() => {
+    if (!masterAnalyserRef?.current || !svgRef.current) return;
+    
+    let animationFrameId: number;
+    const analyser = masterAnalyserRef.current;
+    const bufferLength = analyser.frequencyBinCount; 
+    const dataArray = new Uint8Array(bufferLength);
+    
+    const svg = d3.select(svgRef.current);
+    const numBars = Math.min(bufferLength, 64);
+
+    const draw = () => {
+      animationFrameId = requestAnimationFrame(draw);
+      
+      const width = svgRef.current?.clientWidth || 300;
+      const height = svgRef.current?.clientHeight || 40;
+      
+      svg.attr("width", width).attr("height", height);
+
+      analyser.getByteFrequencyData(dataArray);
+      
+      const slicedData = Array.from(dataArray).slice(0, numBars);
+      
+      const xScale = d3.scaleBand()
+        .domain(d3.range(numBars).map(String))
+        .range([0, width])
+        .padding(0.1);
+        
+      const yScale = d3.scaleLinear()
+        .domain([0, 255])
+        .range([height, 0]);
+
+      const rects = svg.selectAll("rect").data(slicedData);
+      
+      rects.enter()
+        .append("rect")
+        .merge(rects as any)
+        .attr("x", (d: any, i: number) => xScale(String(i)) || 0)
+        .attr("y", (d: any) => yScale(d))
+        .attr("width", xScale.bandwidth())
+        .attr("height", (d: any) => height - yScale(d))
+        .attr("fill", (d: any) => {
+          const intensity = d / 255;
+          return `rgb(${Math.round(255 * Math.pow(intensity, 1.5))}, ${Math.round(200 * (1 - intensity))}, 50)`;
+        })
+        .attr("rx", 1)
+        .attr("opacity", 0.9);
+        
+      rects.exit().remove();
+    };
+
+    // Delay start slightly to allow rendering
+    setTimeout(() => {
+      draw();
+    }, 100);
+
+    return () => {
+      cancelAnimationFrame(animationFrameId);
+      svg.selectAll("*").remove(); 
+    };
+  }, [masterAnalyserRef]);
+
+  useEffect(() => {
+    let animationFrameId: number;
+    const dataArrayA = new Uint8Array(64);
+    const dataArrayB = new Uint8Array(64);
+
+    const checkClipping = () => {
+      // Deck A
+      if (analyserRefA?.current) {
+        analyserRefA.current.getByteTimeDomainData(dataArrayA);
+        let maxAmpA = 0;
+        for (let i = 0; i < dataArrayA.length; i++) {
+          const val = Math.abs(dataArrayA[i] - 128);
+          if (val > maxAmpA) maxAmpA = val;
+        }
+        if (clipLightRefA.current) {
+          if (maxAmpA > 120) { // ~0.94
+            clipLightRefA.current.style.backgroundColor = "#ef4444";
+            clipLightRefA.current.style.boxShadow = "0 0 12px #ef4444";
+          } else {
+            clipLightRefA.current.style.backgroundColor = "rgba(255, 255, 255, 0.05)";
+            clipLightRefA.current.style.boxShadow = "none";
+          }
+        }
+      }
+
+      // Deck B
+      if (analyserRefB?.current) {
+        analyserRefB.current.getByteTimeDomainData(dataArrayB);
+        let maxAmpB = 0;
+        for (let i = 0; i < dataArrayB.length; i++) {
+          const val = Math.abs(dataArrayB[i] - 128);
+          if (val > maxAmpB) maxAmpB = val;
+        }
+        if (clipLightRefB.current) {
+          if (maxAmpB > 120) { // ~0.94
+            clipLightRefB.current.style.backgroundColor = "#ef4444";
+            clipLightRefB.current.style.boxShadow = "0 0 12px #ef4444";
+          } else {
+            clipLightRefB.current.style.backgroundColor = "rgba(255, 255, 255, 0.05)";
+            clipLightRefB.current.style.boxShadow = "none";
+          }
+        }
+      }
+
+      animationFrameId = requestAnimationFrame(checkClipping);
+    };
+
+    checkClipping();
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [analyserRefA, analyserRefB]);
+
   // Custom dial render helper (creates fully styled Pioneer silver-top knobs)
   const renderDial = (
     label: string,
@@ -176,8 +304,16 @@ export default function Mixer({
       }`}>
         
         {/* Channel A volume fader */}
-        <div className={`flex flex-col items-center justify-between select-none text-center ${compact ? "gap-1" : "gap-2.5"}`}>
-          <span className="text-[9px] text-orange-500 font-bold uppercase tracking-widest">FAD A</span>
+        <div className={`relative flex flex-col items-center justify-between select-none text-center ${compact ? "gap-1" : "gap-2.5"}`}>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] text-orange-500 font-bold uppercase tracking-widest">FAD A</span>
+            <div 
+              ref={clipLightRefA} 
+              className="w-2.5 h-1.5 rounded-sm border border-white/10 transition-colors duration-75"
+              style={{ backgroundColor: "rgba(255, 255, 255, 0.05)" }}
+              title="Clip Indicator"
+            />
+          </div>
           <div className={`relative flex items-center justify-center ${compact ? "h-14 w-4" : "h-28 w-4"}`}>
             <input
               id="volume-fader-a"
@@ -267,8 +403,16 @@ export default function Mixer({
         </div>
 
         {/* Channel B volume fader */}
-        <div className={`flex flex-col items-center justify-between select-none text-center ${compact ? "gap-1" : "gap-2.5"}`}>
-          <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">FAD B</span>
+        <div className={`relative flex flex-col items-center justify-between select-none text-center ${compact ? "gap-1" : "gap-2.5"}`}>
+          <div className="flex flex-col items-center gap-1">
+            <span className="text-[9px] text-blue-400 font-bold uppercase tracking-widest">FAD B</span>
+            <div 
+              ref={clipLightRefB} 
+              className="w-2.5 h-1.5 rounded-sm border border-white/10 transition-colors duration-75"
+              style={{ backgroundColor: "rgba(255, 255, 255, 0.05)" }}
+              title="Clip Indicator"
+            />
+          </div>
           <div className={`relative flex items-center justify-center ${compact ? "h-14 w-4" : "h-28 w-4"}`}>
             <input
               id="volume-fader-b"
@@ -289,16 +433,27 @@ export default function Mixer({
       </div>
 
       {/* Crossfader Slide Control Row */}
-      <div className={`bg-[#050505]/40 rounded-xl border border-white/5 ${
+      <div className={`bg-[#050505]/40 rounded-xl border border-white/5 relative ${
         compact ? "p-1.5 space-y-1" : "p-4 space-y-3"
       }`}>
         <div className={`flex justify-between items-center select-none text-[10px] ${compact ? "text-[8.5px]" : ""}`}>
           <span className="text-zinc-555 font-bold uppercase tracking-widest flex items-center gap-1">
             <SlidersHorizontal className="h-3 w-3 text-orange-500" /> {compact ? "DECK A" : "DECK A (LEFT)"}
           </span>
-          <span className="text-zinc-500 font-bold uppercase tracking-widest font-mono">
-            {crossfader === 0 ? "CENTRE" : crossfader < 0 ? `DECK A` : `DECK B`}
-          </span>
+          
+          <button
+            onClick={onToggleCrossfaderCurve}
+            className={`flex items-center gap-1.5 px-2 py-0.5 rounded border ${
+              crossfaderCurve === "cut" 
+                ? "bg-red-500/10 border-red-500/20 text-red-500" 
+                : crossfaderCurve === "linear" 
+                  ? "bg-blue-500/10 border-blue-500/20 text-blue-500"
+                  : "bg-orange-500/10 border-orange-500/20 text-orange-500"
+            } transition-colors cursor-pointer title="Crossfader Curve"`}
+          >
+            <span className="font-mono font-bold text-[8px] uppercase">CURVE: {crossfaderCurve}</span>
+          </button>
+          
           <span className="text-zinc-555 font-bold uppercase tracking-widest flex items-center gap-1">
             {compact ? "DECK B" : "DECK B (RIGHT)"} <SlidersHorizontal className="h-3 w-3 text-blue-450" />
           </span>
@@ -322,6 +477,14 @@ export default function Mixer({
 
       {/* Master Volume Output & Hard Limiter Section */}
       <div className={`${compact ? "space-y-1" : "space-y-2"}`}>
+        {/* D3 Real-Time Frequency Visualizer */}
+        <div className="w-full px-1">
+          <svg 
+            ref={svgRef} 
+            className={`w-full ${compact ? "h-6" : "h-12"} rounded-md bg-[#020202] border border-white/5 shadow-inner`}
+          />
+        </div>
+
         {/* Master Volume Output Control Row */}
         <div className={`flex justify-between items-center gap-4 border border-white/5 ${
           compact ? "bg-[#050505]/40 p-1.5 rounded-lg" : "bg-[#050505]/80 p-3.5 rounded-xl"

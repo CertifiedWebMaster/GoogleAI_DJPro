@@ -16,8 +16,18 @@ import { detectKeyFromAudioBuffer, getDeterministicFallbackKey } from "./utils/k
 export default function App() {
   const [sessionActive, setSessionActive] = useState(false);
   const [layoutMode, setLayoutMode] = useState<"standard" | "compact">("standard");
+  const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [crossfader, setCrossfader] = useState(0); // -1 (left A) to +1 (right B)
+  const [crossfaderCurve, setCrossfaderCurve] = useState<"power" | "linear" | "cut">("power");
   const [masterVolume, setMasterVolume] = useState(0.8);
+
+  const handleToggleCrossfaderCurve = () => {
+    setCrossfaderCurve((prev) => {
+      if (prev === "power") return "linear";
+      if (prev === "linear") return "cut";
+      return "power";
+    });
+  };
   const [fxDelay, setFxDelay] = useState(0.0); // Wet delay fader
   const [fxDelayTime, setFxDelayTime] = useState(0.5); // Second intervals (1/4 loop)
   const [fxReverb, setFxReverb] = useState(0.05); // Wet reverb fader
@@ -43,6 +53,7 @@ export default function App() {
     eqHigh: 0,
     filterVal: 0,
     loadedTrack: null,
+    hotCues: [null, null, null],
   });
 
   const [deckB, setDeckB] = useState<DeckState>({
@@ -60,6 +71,7 @@ export default function App() {
     eqHigh: 0,
     filterVal: 0,
     loadedTrack: null,
+    hotCues: [null, null, null],
   });
 
   // Web Audio Context & Node persistence
@@ -88,6 +100,7 @@ export default function App() {
   const gainNodeRefB = useRef<GainNode | null>(null);
   const crossfaderNodeRefB = useRef<GainNode | null>(null);
   const analyserRefB = useRef<AnalyserNode | null>(null);
+  const masterAnalyserRef = useRef<AnalyserNode | null>(null);
 
   // FX Nodes
   const delayNodeRef = useRef<DelayNode | null>(null);
@@ -366,7 +379,13 @@ export default function App() {
       limiter.threshold.setValueAtTime(0.0, ctx.currentTime);
       limiter.ratio.setValueAtTime(1.0, ctx.currentTime);
     }
-    limiter.connect(ctx.destination);
+    
+    const masterAna = ctx.createAnalyser();
+    masterAna.fftSize = 256;
+    masterAnalyserRef.current = masterAna;
+
+    limiter.connect(masterAna);
+    masterAna.connect(ctx.destination);
 
     // Connect Echo feedback loop
     masterGain.connect(delay);
@@ -420,6 +439,10 @@ export default function App() {
     await ctx.resume();
   };
 
+  useEffect(() => {
+    updateCrossfading(crossfader, null, null);
+  }, [crossfaderCurve]);
+
   // Safe Dynamic Crossfading using Constant-Power cosine formula to balance volumes
   const updateCrossfading = (val: number, nodeA: GainNode | null, nodeB: GainNode | null) => {
     const actNodeA = nodeA || crossfaderNodeRefA.current;
@@ -427,16 +450,36 @@ export default function App() {
     if (!actNodeA || !actNodeB) return;
 
     // val ranges from -1.0 (Left Deck A only) to +1.0 (Right Deck B only)
-    if (val <= 0) {
-      actNodeA.gain.value = 1.0;
-      // Fade down B as we slide left
-      // Normalize fader position from 0 to 1
-      const normalized = Math.abs(val); // 0 to 1
-      actNodeB.gain.value = Math.cos(normalized * Math.PI / 2);
+    if (crossfaderCurve === "linear") {
+      if (val <= 0) {
+        actNodeA.gain.value = 1.0;
+        actNodeB.gain.value = 1.0 - Math.abs(val);
+      } else {
+        actNodeB.gain.value = 1.0;
+        actNodeA.gain.value = 1.0 - val;
+      }
+    } else if (crossfaderCurve === "cut") {
+      if (val === -1) {
+        actNodeA.gain.value = 1.0;
+        actNodeB.gain.value = 0.0;
+      } else if (val === 1) {
+        actNodeB.gain.value = 1.0;
+        actNodeA.gain.value = 0.0;
+      } else {
+        // Cut curve maintains full volume for both channels unless the fader is at the extreme end
+        actNodeA.gain.value = 1.0;
+        actNodeB.gain.value = 1.0;
+      }
     } else {
-      actNodeB.gain.value = 1.0;
-      // Fade down A as we slide right
-      actNodeA.gain.value = Math.cos(val * Math.PI / 2);
+      // Power curve (Constant Power)
+      if (val <= 0) {
+        actNodeA.gain.value = 1.0;
+        const normalized = Math.abs(val); // 0 to 1
+        actNodeB.gain.value = Math.cos(normalized * Math.PI / 2);
+      } else {
+        actNodeB.gain.value = 1.0;
+        actNodeA.gain.value = Math.cos(val * Math.PI / 2);
+      }
     }
   };
 
@@ -580,6 +623,7 @@ export default function App() {
       isLooping: false,
       detectedKey: fallbackKey,
       isKeyAnalyzing: true,
+      hotCues: [null, null, null],
     };
 
     if (deckId === "A") {
@@ -815,8 +859,16 @@ export default function App() {
             {/* Hardware VU Level Meters, Timer & layout Mode Switchers */}
             <div className="flex items-center gap-4 flex-wrap md:flex-nowrap">
               
-              {/* Layout Mode Toggles */}
-              <div className="flex bg-[#050505] p-1 border border-white/5 rounded-xl font-sans text-xs font-bold leading-none select-none">
+              {/* Layout Mode Toggles & Help */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setIsHelpOpen(true)}
+                  className="bg-[#050505] p-2 md:p-2.5 hover:bg-zinc-800 transition-colors border border-white/5 rounded-xl font-sans text-xs font-bold leading-none select-none text-zinc-400 group cursor-pointer"
+                  title="Keyboard Shortcuts & Help"
+                >
+                  <HelpCircle className="h-4 w-4 group-hover:text-white" />
+                </button>
+                <div className="flex bg-[#050505] p-1 border border-white/5 rounded-xl font-sans text-xs font-bold leading-none select-none">
                 <button
                   id="layout-standard-btn"
                   onClick={() => setLayoutMode("standard")}
@@ -843,6 +895,7 @@ export default function App() {
                   <Minimize2 className="h-3 w-3" />
                   <span>Single Board</span>
                 </button>
+              </div>
               </div>
 
               {/* Record Mix Control Button */}
@@ -954,6 +1007,11 @@ export default function App() {
                 onToggleLimiter={handleToggleLimiter}
                 eqBypass={eqBypass}
                 onToggleEqBypass={handleToggleEqBypass}
+                analyserRefA={analyserRefA}
+                analyserRefB={analyserRefB}
+                masterAnalyserRef={masterAnalyserRef}
+                crossfaderCurve={crossfaderCurve}
+                onToggleCrossfaderCurve={handleToggleCrossfaderCurve}
               />
             </div>
 
@@ -1018,6 +1076,58 @@ export default function App() {
         </div>
       )}
       
+      {/* Keyboard Shortcuts Help Modal */}
+      {isHelpOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm shadow-2xl transition-opacity animate-in fade-in">
+          <div className="bg-[#0f0f0f] border border-white/10 rounded-2xl p-6 md:p-8 max-w-lg w-full relative shadow-[0_0_50px_rgba(0,0,0,0.8)]">
+            <button
+              onClick={() => setIsHelpOpen(false)}
+              className="absolute top-4 right-4 w-8 h-8 flex items-center justify-center rounded-full bg-zinc-900 border border-white/5 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors cursor-pointer"
+            >
+              ✕
+            </button>
+            <h2 className="text-xl font-black uppercase tracking-widest text-white mb-2 flex items-center gap-2">
+              <span className="text-orange-500">System</span> Shortcuts
+            </h2>
+            <p className="text-sm text-zinc-400 mb-6">Press keys while a specific DJ Deck is active/focused to control it.</p>
+            
+            <div className="space-y-4">
+              <div className="flex justify-between items-center bg-[#050505] p-3 rounded-xl border border-white/5">
+                <span className="text-sm font-bold text-zinc-200">Play / Pause Deck</span>
+                <span className="bg-zinc-800 border border-zinc-700 text-zinc-300 px-3 py-1 rounded text-xs font-mono font-bold">Spacebar</span>
+              </div>
+              <div className="flex justify-between items-center bg-[#050505] p-3 rounded-xl border border-white/5">
+                <span className="text-sm font-bold text-zinc-200">Set / Jump to CUE</span>
+                <span className="bg-zinc-800 border border-zinc-700 text-zinc-300 px-3 py-1 rounded text-xs font-mono font-bold">C</span>
+              </div>
+              <div className="flex justify-between items-center bg-[#050505] p-3 rounded-xl border border-white/5">
+                <span className="text-sm font-bold text-zinc-200">Sync BPM to Opposite Deck</span>
+                <span className="bg-zinc-800 border border-zinc-700 text-zinc-300 px-3 py-1 rounded text-xs font-mono font-bold">S</span>
+              </div>
+              <div className="flex justify-between items-center bg-[#050505] p-3 rounded-xl border border-white/5">
+                <span className="text-sm font-bold text-zinc-200">Save / Jump to Hot Cue 1, 2, 3</span>
+                <span className="bg-zinc-800 border border-zinc-700 text-zinc-300 px-3 py-1 rounded text-xs font-mono font-bold">1, 2, 3</span>
+              </div>
+              <div className="flex justify-between items-center bg-[#050505] p-3 rounded-xl border border-white/5">
+                <span className="text-sm font-bold text-zinc-200">Trigger 1/4 Beat Repeat Roll</span>
+                <span className="bg-zinc-800 border border-zinc-700 text-zinc-300 px-3 py-1 rounded text-xs font-mono font-bold">X</span>
+              </div>
+              <div className="flex justify-between items-center bg-[#050505] p-3 rounded-xl border border-white/5">
+                <span className="text-sm font-bold text-zinc-200">Engage Beat Loop (4 Beats)</span>
+                <span className="bg-zinc-800 border border-zinc-700 text-zinc-300 px-3 py-1 rounded text-xs font-mono font-bold">L</span>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => setIsHelpOpen(false)}
+              className="mt-8 w-full py-3 bg-zinc-800 hover:bg-zinc-700 text-white font-bold tracking-widest uppercase rounded-xl transition-colors"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

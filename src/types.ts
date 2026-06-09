@@ -40,4 +40,5 @@ export interface DeckState {
   loadedTrack: Track | null;
   detectedKey?: string;
   isKeyAnalyzing?: boolean;
+  hotCues: (number | null)[]; // 3 hot cue memory positions (in seconds or null if unsaved)
 }

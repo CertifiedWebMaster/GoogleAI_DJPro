@@ -5,7 +5,7 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { Track, DeckState } from "../types";
-import { Play, Pause, Square, RefreshCw, Layers, Sparkles, Disc3, Activity } from "lucide-react";
+import { Play, Pause, Square, RefreshCw, Layers, Sparkles, Disc3, Activity, Flame } from "lucide-react";
 
 interface DeckProps {
   id: "A" | "B";
@@ -976,6 +976,31 @@ export default function Deck({
       } else if (key === "s") {
         e.preventDefault();
         onSync();
+      } else if (key === "x") {
+        e.preventDefault();
+        handleBeatRepeatToggle();
+      } else if (key === "l") {
+        e.preventDefault();
+        toggleLoop(4);
+      } else if (["1", "2", "3"].includes(key)) {
+        e.preventDefault();
+        const idx = parseInt(key) - 1;
+        const audio = audioRef.current;
+        if (!audio) return;
+        
+        const cueTime = deckState.hotCues?.[idx];
+        const isSet = cueTime !== undefined && cueTime !== null;
+        
+        if (!isSet) {
+          // Set Hot Cue
+          const nextCues = [...(deckState.hotCues || [null, null, null])];
+          nextCues[idx] = audio.currentTime;
+          updateDeckState(id, { hotCues: nextCues });
+        } else {
+          // Jump to Hot Cue
+          audio.currentTime = cueTime;
+          updateDeckState(id, { currentTime: cueTime });
+        }
       }
     };
 
@@ -983,7 +1008,7 @@ export default function Deck({
     return () => {
       window.removeEventListener("keydown", handleGlobalKeyDown);
     };
-  }, [id, loadedTrack, deckState.isPlaying, deckState.currentTime, cuePoint, togglePlay, triggerCue, onSync]);
+  }, [id, loadedTrack, deckState.isPlaying, deckState.currentTime, cuePoint, deckState.hotCues, togglePlay, triggerCue, onSync, updateDeckState, audioRef]);
 
   // Visual beat-grid overlay ticks generator
   const beatGridElements = React.useMemo(() => {
@@ -1435,6 +1460,29 @@ export default function Deck({
               title="CUE Point"
             />
           )}
+
+          {/* Hot Cue overlay markers */}
+          {loadedTrack && deckState.hotCues && deckState.hotCues.map((cue, idx) => {
+            if (cue === null || cue === undefined) return null;
+            return (
+              <div
+                key={idx}
+                className="absolute top-0 bottom-0 w-0.5 border-r border-black/50 flex flex-col items-center justify-start pointer-events-none z-30"
+                style={{ left: `${(cue / (deckState.duration || 1)) * 100}%` }}
+              >
+                {/* Visual marker line */}
+                <div className={`h-full w-full ${id === "A" ? "bg-orange-500 shadow-[0_0_6px_#f97316]" : "bg-blue-400 shadow-[0_0_6px_#3b82f6]"}`} />
+                {/* Little marker badge */}
+                <span className={`absolute top-0.5 -translate-x-1/2 text-[7px] font-black font-mono rounded px-0.5 border leading-none py-0.5 shadow-md ${
+                  id === "A" 
+                    ? "bg-orange-500 text-slate-950 border-orange-400" 
+                    : "bg-blue-500 text-white border-blue-400"
+                }`}>
+                  c{idx + 1}
+                </span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
@@ -1490,13 +1538,18 @@ export default function Deck({
                 id={`loop-btn-${id}-${beats}`}
                 key={beats}
                 onClick={() => toggleLoop(beats)}
-                className={`py-1 text-xs font-bold font-mono rounded-lg transition-all border cursor-pointer ${
+                className={`py-1 text-xs font-bold font-mono rounded-lg transition-all border cursor-pointer relative group/loop ${
                   isLoopActive
                     ? "bg-orange-500 text-slate-950 border-orange-400 font-black scale-[0.98]"
                     : "bg-[#050505] hover:bg-zinc-900 text-gray-300 border-white/5"
                 }`}
               >
-                {beats}B
+                <span>{beats}B</span>
+                {beats === 4 && loadedTrack && (
+                  <span className="absolute bottom-0 right-1 text-[6.5px] font-mono px-0.5 py-0 bg-black/50 text-zinc-400 rounded leading-none opacity-0 group-hover/loop:opacity-100 transition-opacity border border-white/5 uppercase select-none pointer-events-none">
+                    L
+                  </span>
+                )}
               </button>
             );
           })}
@@ -1508,7 +1561,7 @@ export default function Deck({
             id={`beat-repeat-btn-${id}`}
             onClick={handleBeatRepeatToggle}
             disabled={!loadedTrack}
-            className={`w-full py-2 mt-1.5 text-xs font-black tracking-widest uppercase rounded-lg border transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer ${
+            className={`w-full py-2 mt-1.5 text-xs font-black tracking-widest uppercase rounded-lg border transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer relative group/beat ${
               !loadedTrack
                 ? "bg-[#050505] text-zinc-700 border-white/5 cursor-not-allowed"
                 : isBeatRepeat
@@ -1519,8 +1572,96 @@ export default function Deck({
           >
             <Activity className={`h-3 w-3 ${isBeatRepeat ? "animate-spin" : ""}`} />
             <span>BEAT REPEAT (1/4 BAR)</span>
+            {/* Keyboard Shortcut Badge */}
+            {loadedTrack && (
+              <span className="absolute bottom-1 right-2 text-[7px] font-mono px-1 py-0 bg-black/50 text-zinc-400 rounded leading-none opacity-0 group-hover/beat:opacity-100 transition-opacity border border-white/5 uppercase select-none pointer-events-none">
+                X
+              </span>
+            )}
           </button>
         )}
+      </div>
+
+      {/* Hot Cues Block */}
+      <div className="flex flex-col gap-1 select-none">
+        <div className="flex justify-between items-center">
+          <span className="text-[9px] text-[#555] font-black tracking-widest uppercase flex items-center gap-1">
+            <Flame className="h-3 w-3 text-orange-500" /> HOT CUES
+          </span>
+          <span className="text-[7.5px] text-zinc-550 uppercase tracking-widest font-mono">
+            CLICK TO SET / JUMP
+          </span>
+        </div>
+
+        <div className="grid grid-cols-3 gap-1.5 px-0.5">
+          {[0, 1, 2].map((idx) => {
+            const cueTime = deckState.hotCues?.[idx];
+            const isSet = cueTime !== undefined && cueTime !== null;
+            return (
+              <div key={idx} className="relative group/idx">
+                <button
+                  id={`hotcue-btn-${id}-${idx + 1}`}
+                  disabled={!loadedTrack}
+                  onClick={() => {
+                    const audio = audioRef.current;
+                    if (!audio) return;
+                    if (!isSet) {
+                      // Set Hot Cue
+                      const nextCues = [...(deckState.hotCues || [null, null, null])];
+                      nextCues[idx] = audio.currentTime;
+                      updateDeckState(id, { hotCues: nextCues });
+                    } else {
+                      // Jump to Hot Cue
+                      audio.currentTime = cueTime;
+                      updateDeckState(id, { currentTime: cueTime });
+                    }
+                  }}
+                  className={`w-full py-2 text-[10px] font-mono rounded-lg transition-all border font-bold relative flex flex-col items-center justify-center cursor-pointer select-none leading-none ${
+                    !loadedTrack
+                      ? "bg-[#050505]/60 text-zinc-700 border-white/5 cursor-not-allowed"
+                      : isSet
+                      ? id === "A"
+                        ? "bg-orange-500/15 border-orange-500 text-orange-400 hover:bg-orange-500/25 active:scale-95 shadow-[0_0_8px_rgba(249,115,22,0.15)]"
+                        : "bg-blue-500/15 border-blue-500 text-blue-400 hover:bg-blue-500/25 active:scale-95 shadow-[0_0_8px_rgba(59,130,246,0.15)]"
+                      : "bg-[#050505] border-dashed border-white/10 hover:border-white/20 text-zinc-600 hover:text-zinc-400"
+                  }`}
+                  title={isSet ? `Jump to Hot Cue ${idx + 1} (${formatTime(cueTime)})` : `Set Hot Cue ${idx + 1} at Current Playhead`}
+                >
+                  <span className="text-[9px] font-black tracking-widest uppercase">
+                    {isSet ? `CUE ${idx + 1}` : `SET ${idx + 1}`}
+                  </span>
+                  {isSet && (
+                    <span className="text-[7px] font-semibold text-zinc-500 mt-1">
+                      {formatTime(cueTime)}
+                    </span>
+                  )}
+                </button>
+                {/* Keyboard Shortcut Badge */}
+                {loadedTrack && (
+                  <span className="absolute bottom-1 right-1 text-[7px] md:text-[8px] font-mono px-1 py-0 bg-black/50 text-zinc-400 rounded leading-none opacity-0 group-hover/idx:opacity-100 transition-opacity border border-white/5 uppercase select-none pointer-events-none">
+                    {idx + 1}
+                  </span>
+                )}
+                {/* Clear Hot Cue button */}
+                {loadedTrack && isSet && (
+                  <button
+                    id={`clear-hotcue-btn-${id}-${idx + 1}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const nextCues = [...(deckState.hotCues || [null, null, null])];
+                      nextCues[idx] = null;
+                      updateDeckState(id, { hotCues: nextCues });
+                    }}
+                    className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-zinc-900 border border-white/10 rounded-full flex items-center justify-center text-zinc-450 hover:text-white hover:bg-red-500/20 hover:border-red-500/40 opacity-0 group-hover/idx:opacity-100 transition-opacity cursor-pointer text-[8px] font-black z-20"
+                    title={`Clear Hot Cue ${idx + 1}`}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Play, Cue, Sync Control Button block */}
